@@ -46,6 +46,15 @@ def estimate_ild(
     if config is None:
         config = PipelineConfig()
 
+    # ── Input contract assertions ──
+    assert left.ndim == 1, f"[ILD] Left must be 1-D, got {left.shape}"
+    assert right.ndim == 1, f"[ILD] Right must be 1-D, got {right.shape}"
+    assert left.dtype == np.float32, f"[ILD] Left dtype: {left.dtype}"
+    assert right.dtype == np.float32, f"[ILD] Right dtype: {right.dtype}"
+    assert len(left) == len(right), (
+        f"[ILD] Channel length mismatch: L={len(left)}, R={len(right)}"
+    )
+
     frame_samples = int(config.gcc_frame_len * sr)
     hop_samples = int(config.gcc_hop_len * sr)
 

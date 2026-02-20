@@ -66,6 +66,10 @@ def extract_embeddings(
     if config is None:
         config = PipelineConfig()
 
+    # ── Input contract assertions ──
+    assert mono.ndim == 1, f"[Embeddings] Expected 1-D mono, got {mono.shape}"
+    assert mono.dtype == np.float32, f"[Embeddings] Expected float32, got {mono.dtype}"
+
     model = _get_embedding_model(config)
 
     all_embeddings = []

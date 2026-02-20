@@ -100,4 +100,94 @@ Live log of all errors encountered, their root causes, and resolutions.
 
 ---
 
+## ERR-008: GCC-PHAT localization collapses to 0° (Center) under noise
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-17 |
+| **Stage**   | Stage 2 — GCC-PHAT TDOA Estimation |
+| **Trigger** | Testing pipeline with environmental noise (white noise, forest ambience) added to stereo audio |
+| **Symptom** | Azimuth values collapse to 0° for all speakers. Speakers show position="center" instead of left/right. Clean audio still works correctly. |
+| **Root Cause** | The GCC-PHAT cross-correlation itself fails under low SNR. Five compounding issues: (1) Full-bandwidth input — noise outside speech range (< 300 Hz, > 3400 Hz) corrupts cross-correlation. (2) No energy gating — silent/noisy frames produce random TDOA peaks. (3) No peak quality check — flat/noisy GCC correlation accepted as valid. (4) No TDOA smoothing — sporadic noise spikes in raw delay estimates. (5) No jump rejection — extreme frame-to-frame TDOA changes accepted as real. |
+| **Fix**     | 5-part GCC-PHAT hardening (see CHANGELOG.md v0.4): (1) Band-pass filter 300–3400 Hz before cross-correlation. (2) Energy gating with RMS floor. (3) Peak-to-mean ratio validation (min 3.0). (4) Median filter on raw TDOA. (5) Outlier rejection for impossible delays and extreme jumps. |
+| **Status**  | RESOLVED |
+| **Post-fix test** | 2 speakers detected: S1 at -64.6° (left), S2 at +72.6° (right). GCC-PHAT: 515/1099 speech-active frames, 21 energy-gated, 269 valid TDOA. |
+
+---
+
+## ERR-009: Speaker over-detection under noise (3 instead of 2)
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-17 |
+| **Stage**   | Stage 1 — Clustering |
+| **Trigger** | Testing with environmental noise added to stereo audio |
+| **Symptom** | Pipeline detects 3 speakers instead of 2. Noise fragments form their own cluster with < 1s of speech. |
+| **Root Cause** | `cluster_min_members=1` allowed single-segment noise clusters to survive. No duration-based validation — a cluster with 0.3s of noise-triggered speech could become a "speaker". |
+| **Fix**     | (1) Raised `cluster_min_members` from 1 → 2. (2) Added `_merge_short_duration_clusters()` — clusters with total speech < `cluster_min_duration` (1.0s) get merged into nearest large cluster. (3) Pass `segment_times` to clustering for duration calculation. See CHANGELOG.md v0.5. |
+| **Status**  | RESOLVED |
+| **Post-fix test** | 2 speakers detected correctly. |
+
+---
+
+## ERR-010: False movement detection under noise
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-17 |
+| **Stage**   | Stage 3 — Kalman Tracking |
+| **Trigger** | Testing with environmental noise |
+| **Symptom** | Stationary speakers flagged as "MOVING". Azimuth range inflated by noise spikes. |
+| **Root Cause** | Movement detection used simple `max(smoothed) - min(smoothed) > 10°`. Even after Kalman smoothing, a few noise-induced azimuth outliers inflated the range past the threshold. No check for sustained vs. momentary shift. |
+| **Fix**     | Replaced with `_detect_sustained_movement()`: (1) Median filter (window=11) on trajectory. (2) Half-split mean comparison — first half vs second half must differ by > 10°. (3) Sliding window (1.0s) sustained shift verification. Short spikes ignored. See CHANGELOG.md v0.5. |
+| **Status**  | RESOLVED |
+| **Post-fix test** | Both stationary speakers correctly flagged as "STATIONARY". |
+
+---
+
+## ERR-011: Clustering collapse at 5 dB SNR — spectral partition discarded for AHC
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-18 |
+| **Stage**   | Stage 1 — Clustering (`_select_best_partition`) |
+| **Trigger** | EOD testing at 5 dB and 0 dB SNR white noise |
+| **Symptom** | Eigen-gap correctly estimates k=2. Spectral clustering produces correct [8,8] split. But final result is 1 speaker. |
+| **Root Cause** | `_select_best_partition()` compares silhouette scores: spectral=0.3488 vs AHC=0.3598. AHC wins by 0.01 margin, but AHC's partition is [15,1] — one outlier cluster. `_merge_small_clusters` then merges the 1-member cluster, collapsing to k=1. The correct spectral [8,8] split is discarded. Bug: partition selection doesn't check if the chosen partition will survive post-processing. |
+| **Fix**     | Added viability pre-check in `_select_best_partition()`: partitions where any cluster < `min_members` are rejected in favor of viable alternatives. Spectral [8,6] now selected over degenerate AHC [13,1]. See CHANGELOG v0.7. |
+| **Status**  | RESOLVED |
+| **Severity** | Critical — broke speaker detection at moderate noise levels |
+
+---
+
+## ERR-012: Movement false positives at 20 dB and 10 dB SNR
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-18 |
+| **Stage**   | Stage 3 — Movement detection (`_detect_sustained_movement`) |
+| **Trigger** | EOD testing at 20 dB and 10 dB SNR white noise |
+| **Symptom** | Both stationary speakers flagged as "MOVING" at 20 dB and 10 dB. Azimuth std is 20-25 deg (vs 1-2 deg clean). |
+| **Root Cause** | ILD noise creates high azimuth variance (~20 deg std) under moderate noise. The `_detect_sustained_movement()` half-split mean comparison sees >10 deg difference from random ILD drift, not actual speaker movement. The `movement_threshold=10 deg` is static and does not account for the noise floor. |
+| **Fix**     | Made movement threshold noise-adaptive: `effective_threshold = max(base_threshold, noise_scale × observed_std)`. At low SNR, observed azimuth std is large → threshold automatically scales up. Config: `movement_noise_scale=2.5`. See CHANGELOG v0.7. |
+| **Status**  | RESOLVED |
+| **Severity** | High — false movement flags under any noise |
+
+---
+
+## ERR-013: Inconsistent audio handling between in-memory and file-based paths
+
+| Field       | Value |
+|-------------|-------|
+| **Date**    | 2026-02-18 |
+| **Stage**   | Pre-processing / Audio Loading |
+| **Trigger** | Processing noisy audio directly in-memory vs. saving to `.wav` and re-uploading |
+| **Symptom** | In-memory processing produces unstable localization. Saving processed audio to `.wav` then re-uploading gives correct results. |
+| **Root Cause** | Three compounding issues: (1) Streamlit app wrote uploads to a temp `.wav` file then re-read them — this disk roundtrip silently enforced float32 and peak normalization that in-memory callers skipped. (2) No `validate_audio()` function existed — `load_audio()` only accepted file paths, so any in-memory array bypassed all validation (dtype, shape, range). (3) No assertions at module boundaries — float64 promotion, transposed arrays, or un-normalized amplitudes propagated silently, causing GCC-PHAT energy thresholds and peak-to-mean ratios to produce wrong results. (4) Mono downmix used `/ 2.0` (Python float64), silently promoting float32 channels to float64 before downstream modules received them. |
+| **Fix**     | (1) Added `validate_audio()` as single source of truth for all audio entry points — enforces (N,2), float32, [-1,1]. (2) Eliminated temp file writing in Streamlit — reads from `BytesIO` directly. (3) Added input contract assertions to `preprocessing.py`, `gcc_phat.py`, `ild.py`, `vad.py`, `embeddings.py`. (4) Fixed mono downmix to explicitly maintain float32. (5) Added `audio_array`/`sample_rate` params to `run_pipeline()` for consistent in-memory usage. See CHANGELOG.md v0.5.1. |
+| **Status**  | RESOLVED |
+| **Post-fix** | All paths (CLI file, Streamlit upload, programmatic array) converge through `validate_audio()` → `preprocess_stereo()` with identical guarantees. |
+
+---
+
 *This document is updated every time an error is encountered or resolved.*
