@@ -9,6 +9,7 @@ State model per speaker:
 """
 
 import numpy as np
+from scipy.ndimage import median_filter
 
 from .config import PipelineConfig
 
@@ -183,10 +184,13 @@ def track_speakers(
 
             prev_time = t
 
-        # ── Movement detection ──
+        # ── Movement detection (sustained shift, not just range) ──
+        times_arr = np.array([p["time"] for p in trajectory])
         smoothed_arr = np.array(smoothed_positions)
         azimuth_range = float(np.max(smoothed_arr) - np.min(smoothed_arr))
-        movement_detected = azimuth_range > config.movement_threshold
+        movement_detected = _detect_sustained_movement(
+            times_arr, smoothed_arr, config
+        )
 
         results[speaker_id] = {
             "trajectory": trajectory,
@@ -200,6 +204,77 @@ def track_speakers(
     _detect_crossings(results, config)
 
     return results
+
+
+def _detect_sustained_movement(
+    times: np.ndarray, positions: np.ndarray, config: PipelineConfig
+) -> bool:
+    """
+    Detect movement by checking for a sustained azimuth shift, not just
+    momentary spikes. This prevents noise-induced false positives.
+
+    The movement threshold is noise-adaptive: if the observed azimuth
+    standard deviation (from noise jitter) is large, the effective
+    threshold scales up to avoid false positives.
+
+    Algorithm:
+      1. Median-filter the trajectory to remove short spikes
+      2. Compute noise-adaptive threshold: max(base_threshold, scale * observed_std)
+      3. Half-split check: require shift between halves to exceed threshold
+      4. Sustained shift check: sliding window verification
+    """
+    if len(positions) < 4:
+        return False
+
+    # 1. Median filter to suppress spike noise
+    win = min(config.movement_median_window, len(positions))
+    if win < 3:
+        win = 3
+    if win % 2 == 0:
+        win += 1  # median_filter needs odd window
+    filtered = median_filter(positions, size=win, mode="nearest")
+
+    # 2. Noise-adaptive threshold
+    # At low SNR, azimuth jitter inflates std → threshold scales up automatically
+    observed_std = float(np.std(filtered))
+    effective_threshold = max(
+        config.movement_threshold,
+        config.movement_noise_scale * observed_std,
+    )
+
+    # 3. Half-split check: average azimuth in first half vs second half
+    mid = len(filtered) // 2
+    first_half_mean = np.mean(filtered[:mid])
+    second_half_mean = np.mean(filtered[mid:])
+    half_shift = abs(second_half_mean - first_half_mean)
+
+    if half_shift < effective_threshold:
+        return False
+
+    # 4. Sustained shift check: sliding window of movement_min_duration
+    if len(times) < 2:
+        return True  # passed half-check with very few points
+
+    total_duration = times[-1] - times[0]
+    if total_duration < config.movement_min_duration:
+        return False  # not enough time span to verify
+
+    # Find window size in samples
+    avg_dt = total_duration / max(len(times) - 1, 1)
+    window_samples = max(int(config.movement_min_duration / avg_dt), 2)
+
+    if window_samples >= len(filtered):
+        # Window covers entire trajectory — half-check is sufficient
+        return True
+
+    # Scan: check if any window shows a sustained shift from the start
+    start_mean = np.mean(filtered[:window_samples])
+    for i in range(window_samples, len(filtered) - window_samples + 1):
+        local_mean = np.mean(filtered[i:i + window_samples])
+        if abs(local_mean - start_mean) > effective_threshold:
+            return True
+
+    return False
 
 
 def _detect_crossings(results: dict, config: PipelineConfig) -> None:

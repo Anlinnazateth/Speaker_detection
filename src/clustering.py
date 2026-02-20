@@ -14,7 +14,9 @@ from .config import PipelineConfig
 
 
 def cluster_speakers(
-    embeddings: np.ndarray, config: PipelineConfig = None
+    embeddings: np.ndarray,
+    config: PipelineConfig = None,
+    segment_times: list[tuple[float, float]] = None,
 ) -> dict:
     """
     Cluster speaker embeddings to determine speaker count and assign labels.
@@ -25,6 +27,9 @@ def cluster_speakers(
         (S, 192) matrix of L2-normalized speaker embeddings.
     config : PipelineConfig
         Pipeline configuration.
+    segment_times : list of (start_sec, end_sec) or None
+        If provided, enables duration-based cluster validation.
+        Clusters with total duration < cluster_min_duration get merged.
 
     Returns
     -------
@@ -85,13 +90,19 @@ def cluster_speakers(
     # ── Fallback: AHC for validation ──
     ahc_labels = _ahc_cluster(embeddings, k_optimal, config.cluster_cosine_threshold)
 
-    # ── Pick the partition with the higher silhouette score ──
+    # ── Pick the best viable partition (viability + silhouette) ──
     labels = _select_best_partition(
-        embeddings, spectral_labels, ahc_labels
+        embeddings, spectral_labels, ahc_labels, config.cluster_min_members
     )
 
     # ── Merge tiny clusters (< min_members) into nearest neighbor ──
     labels = _merge_small_clusters(embeddings, labels, config.cluster_min_members)
+
+    # ── Merge clusters with insufficient total speech duration ──
+    if segment_times is not None:
+        labels = _merge_short_duration_clusters(
+            embeddings, labels, segment_times, config.cluster_min_duration
+        )
 
     # ── Compute cluster centroids ──
     num_speakers = len(np.unique(labels))
@@ -177,12 +188,37 @@ def _select_best_partition(
     embeddings: np.ndarray,
     labels_a: np.ndarray,
     labels_b: np.ndarray,
+    min_members: int = 2,
 ) -> np.ndarray:
-    """Pick the partition with the higher silhouette score."""
+    """
+    Pick the best viable partition.
+
+    A partition is "viable" if every cluster has at least min_members
+    segments.  Non-viable partitions (e.g. [13, 1] with min_members=2)
+    are penalized because they would be collapsed by the downstream
+    small-cluster merge step, losing the intended split.
+
+    Selection priority:
+      1. If exactly one partition is viable, use it.
+      2. If both (or neither) are viable, use silhouette score.
+    """
     n_unique_a = len(np.unique(labels_a))
     n_unique_b = len(np.unique(labels_b))
 
-    # Silhouette requires at least 2 clusters
+    # Viability check: every cluster must have >= min_members
+    viable_a = n_unique_a >= 2 and all(
+        c >= min_members for c in np.bincount(labels_a) if c > 0
+    )
+    viable_b = n_unique_b >= 2 and all(
+        c >= min_members for c in np.bincount(labels_b) if c > 0
+    )
+
+    if viable_a and not viable_b:
+        return labels_a
+    if viable_b and not viable_a:
+        return labels_b
+
+    # Both viable or both non-viable — fall back to silhouette score
     score_a = (
         silhouette_score(embeddings, labels_a, metric="cosine")
         if n_unique_a >= 2
@@ -224,6 +260,63 @@ def _merge_small_clusters(
         labels[labels == small_k] = large_clusters[nearest_idx]
 
     # Re-label to consecutive integers starting from 0
+    unique_labels = np.unique(labels)
+    label_map = {old: new for new, old in enumerate(unique_labels)}
+    labels = np.array([label_map[l] for l in labels])
+
+    return labels
+
+
+def _merge_short_duration_clusters(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    segment_times: list[tuple[float, float]],
+    min_duration: float,
+) -> np.ndarray:
+    """
+    Merge clusters whose total speech duration is below min_duration
+    into the nearest larger cluster (by centroid cosine similarity).
+    Prevents noise fragments from being promoted to separate speakers.
+    """
+    labels = labels.copy()
+    unique_labels = np.unique(labels)
+
+    if len(unique_labels) <= 1:
+        return labels
+
+    # Compute total duration per cluster
+    cluster_durations = {}
+    for k in unique_labels:
+        mask = labels == k
+        indices = np.where(mask)[0]
+        total = sum(
+            segment_times[i][1] - segment_times[i][0]
+            for i in indices
+            if i < len(segment_times)
+        )
+        cluster_durations[k] = total
+
+    short_clusters = [k for k, dur in cluster_durations.items() if dur < min_duration]
+    long_clusters = [k for k, dur in cluster_durations.items() if dur >= min_duration]
+
+    if len(long_clusters) == 0 or len(short_clusters) == 0:
+        return labels
+
+    # Compute centroids of long clusters
+    long_centroids = np.array([
+        embeddings[labels == k].mean(axis=0) for k in long_clusters
+    ])
+
+    for short_k in short_clusters:
+        short_centroid = embeddings[labels == short_k].mean(axis=0)
+        similarities = long_centroids @ short_centroid
+        nearest_idx = np.argmax(similarities)
+        labels[labels == short_k] = long_clusters[nearest_idx]
+        print(f"[Clustering] Merged cluster {short_k} "
+              f"(duration={cluster_durations[short_k]:.2f}s < {min_duration}s) "
+              f"into cluster {long_clusters[nearest_idx]}")
+
+    # Re-label to consecutive integers
     unique_labels = np.unique(labels)
     label_map = {old: new for new, old in enumerate(unique_labels)}
     labels = np.array([label_map[l] for l in labels])

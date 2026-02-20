@@ -14,12 +14,25 @@ class PipelineConfig:
     min_sample_rate: int = 16000
 
     # --- Preprocessing / Denoising ---
-    denoise_enabled: bool = True            # Enable spectral-gating denoising
-    denoise_stationary: bool = True         # Assume stationary noise (best for ambient/white)
-    denoise_prop_decrease: float = 0.75     # Noise reduction strength [0.0–1.0]
+    denoise_enabled: bool = True            # Enable denoising
+    denoise_method: str = "wiener"          # "wiener" | "spectral" | "none"
+    # Wiener filter parameters
+    wiener_n_fft: int = 2048               # STFT window size for Wiener filter
+    wiener_hop: int = 512                  # STFT hop length for Wiener filter
+    wiener_gain_floor: float = 0.08        # Minimum spectral gain (prevents musical noise)
+    wiener_noise_percentile: float = 15.0  # Per-frequency-bin percentile for noise floor
+    wiener_noise_overestimate: float = 1.5 # Over-estimate noise power for aggressive removal
+    # Spectral subtraction parameters
+    spectral_n_fft: int = 2048             # STFT window size for spectral subtraction
+    spectral_hop: int = 512                # STFT hop length
+    spectral_alpha: float = 2.0            # Over-subtraction factor (1.0–4.0)
+    spectral_beta: float = 0.02            # Spectral floor factor (prevents negative power)
+    spectral_noise_percentile: float = 15.0  # Per-frequency-bin percentile for noise floor
+    # General preprocessing
     highpass_cutoff: float = 80.0           # Hz, removes rumble/mechanical noise
     highpass_order: int = 2                 # Butterworth filter order
     target_rms_dbfs: float = -20.0          # RMS normalization target in dBFS
+    correlation_warn_threshold: float = 0.95  # Warn if inter-channel correlation exceeds this
 
     # --- Voice Activity Detection ---
     vad_threshold: float = 0.35             # Speech probability threshold [0, 1] (lowered for noisy audio)
@@ -37,7 +50,8 @@ class PipelineConfig:
     # --- Clustering ---
     cluster_max_k: int = 10                # Maximum number of speakers to consider
     cluster_cosine_threshold: float = 0.4  # AHC cosine distance threshold (raised for noisy)
-    cluster_min_members: int = 1           # Minimum members per valid cluster (lowered)
+    cluster_min_members: int = 2           # Minimum segments per valid cluster
+    cluster_min_duration: float = 1.0      # Minimum total speech duration (sec) per cluster
     cluster_eigengap_min: float = 0.02     # Minimum eigen-gap to split (lowered for robustness)
     cluster_force_split_dist: float = 0.25 # Force k=2 if max pairwise cosine dist exceeds this
 
@@ -46,6 +60,13 @@ class PipelineConfig:
     gcc_hop_len: float = 0.02              # Hop length for TDOA (seconds, 20ms)
     gcc_confidence_min: float = 0.15       # Minimum GCC peak for valid TDOA
     gcc_speech_only: bool = True           # Only compute GCC-PHAT on speech-active frames
+    gcc_bandpass_lo: float = 300.0         # Band-pass lower edge Hz (speech fundamental)
+    gcc_bandpass_hi: float = 3400.0        # Band-pass upper edge Hz (speech formants)
+    gcc_bandpass_order: int = 4            # Butterworth band-pass filter order
+    gcc_energy_floor: float = 1e-4         # RMS energy floor — skip frame if below
+    gcc_peak_to_mean_min: float = 3.0      # Minimum peak-to-mean ratio for valid GCC
+    gcc_tdoa_median_window: int = 5        # Median filter window applied to raw TDOA
+    gcc_tdoa_jump_max: float = 0.5         # Max frame-to-frame TDOA jump (in tau_max units)
     azimuth_median_window: int = 5         # Median filter window for azimuth smoothing
     azimuth_outlier_sigma: float = 2.5     # Reject azimuths > N sigma from local median
 
@@ -56,7 +77,10 @@ class PipelineConfig:
     # --- Kalman Filter ---
     kalman_q: float = 1.0                  # Process noise intensity (deg^2/s^3)
     kalman_r_base: float = 25.0            # Base measurement noise (deg^2)
-    movement_threshold: float = 10.0       # Azimuth range to flag movement (degrees)
+    movement_threshold: float = 10.0       # Sustained azimuth shift to flag movement (degrees)
+    movement_min_duration: float = 1.0     # Minimum sustained shift duration (seconds)
+    movement_median_window: int = 11       # Median filter window for movement trajectory smoothing
+    movement_noise_scale: float = 2.5      # Scale movement threshold by N × observed azimuth std
     kalman_reinit_gap: float = 5.0         # Re-initialize filter if gap exceeds this (seconds)
     kalman_gate_sigma: float = 3.0         # Innovation gating threshold (sigma)
 

@@ -17,7 +17,7 @@ if not hasattr(torchaudio, "list_audio_backends"):
     torchaudio.list_audio_backends = lambda: ["default"]
 
 from .config import PipelineConfig
-from .audio_loader import load_audio
+from .audio_loader import load_audio, validate_audio
 from .preprocessing import preprocess_stereo
 from .vad import detect_speech_segments
 from .embeddings import extract_embeddings
@@ -28,31 +28,37 @@ from .ild import estimate_ild
 from .association import associate_speakers_with_locations
 from .kalman_tracker import track_speakers
 from .output_formatter import format_output, save_json, print_summary
-from .visualize import visualize_results
 
 
 def run_pipeline(
-    audio_path: str,
+    audio_path: str = None,
     config: PipelineConfig = None,
     max_stage: int = 3,
     output_path: str = None,
+    audio_array: np.ndarray = None,
+    sample_rate: int = None,
 ) -> dict:
     """
     Execute the full multi-speaker localization and tracking pipeline.
 
+    Two entry modes (exactly one must be provided):
+      1. audio_path — load from disk (CLI usage)
+      2. audio_array + sample_rate — use in-memory array (programmatic usage)
+
     Parameters
     ----------
-    audio_path : str
+    audio_path : str or None
         Path to the stereo .wav file.
     config : PipelineConfig
         Pipeline configuration (uses defaults if None).
     max_stage : int
         Maximum stage to run (1, 2, or 3).
-            1 = VAD + embeddings + clustering (speaker count & diarization)
-            2 = + GCC-PHAT + TDOA + azimuth + speaker-location association
-            3 = + Kalman tracking + movement + crossing detection
     output_path : str or None
         If provided, save JSON results to this file.
+    audio_array : np.ndarray or None
+        In-memory stereo audio array, shape (N, 2).
+    sample_rate : int or None
+        Sample rate (required if audio_array is provided).
 
     Returns
     -------
@@ -61,9 +67,21 @@ def run_pipeline(
     if config is None:
         config = PipelineConfig()
 
+    # ── Resolve audio source: file path OR in-memory array ──
+    if audio_array is not None:
+        if sample_rate is None:
+            raise ValueError("sample_rate is required when providing audio_array")
+        source_label = "in-memory array"
+        audio_data = validate_audio(audio_array, sample_rate, config)
+    elif audio_path is not None:
+        source_label = audio_path
+        audio_data = load_audio(audio_path, config)
+    else:
+        raise ValueError("Provide either audio_path or audio_array + sample_rate")
+
     print(f"\n{'='*60}")
     print(f"  MULTI-SPEAKER LOCALIZATION PIPELINE (Stage 1-{max_stage})")
-    print(f"  Input: {audio_path}")
+    print(f"  Input: {source_label}")
     print(f"{'='*60}\n")
 
     # ════════════════════════════════════════════════════════════
@@ -71,7 +89,6 @@ def run_pipeline(
     # ════════════════════════════════════════════════════════════
 
     print("[Stage 1] Audio loading and preprocessing...")
-    audio_data = load_audio(audio_path, config)
     preprocessed = preprocess_stereo(audio_data["audio"], audio_data["sr"], config)
 
     print("[Stage 1] Voice Activity Detection...")
@@ -101,7 +118,7 @@ def run_pipeline(
     )
 
     print("[Stage 1] Clustering speakers...")
-    cluster_result = cluster_speakers(embeddings, config)
+    cluster_result = cluster_speakers(embeddings, config, segment_times=segment_times)
     labels = cluster_result["labels"]
     num_speakers = cluster_result["num_speakers"]
 
@@ -191,19 +208,6 @@ def run_pipeline(
 
     if output_path:
         save_json(result, output_path)
-
-    # ════════════════════════════════════════════════════════════
-    # VISUALIZATION
-    # ════════════════════════════════════════════════════════════
-
-    print("\n[Visualize] Generating plots...")
-    output_base = output_path.rsplit(".", 1)[0] if output_path else "output"
-    visualize_results(
-        results=result,
-        audio=audio_data["audio"],
-        sr=audio_data["sr"],
-        output_prefix=output_base,
-    )
 
     return result
 

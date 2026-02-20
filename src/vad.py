@@ -32,6 +32,10 @@ def detect_speech_segments(
     if config is None:
         config = PipelineConfig()
 
+    # ── Input contract assertions ──
+    assert mono.ndim == 1, f"[VAD] Expected 1-D mono, got {mono.shape}"
+    assert mono.dtype == np.float32, f"[VAD] Expected float32, got {mono.dtype}"
+
     # ── Load Silero VAD model ──
     model, utils = torch.hub.load(
         repo_or_dir="snakers4/silero-vad",
