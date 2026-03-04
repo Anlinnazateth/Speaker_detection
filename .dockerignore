@@ -1,0 +1,15 @@
+.git
+__pycache__
+*.pyc
+*.wav
+results*.json
+*.md
+!README.md
+.vscode
+.idea
+venv
+.env
+.pytest_cache
+.github
+tests
+context.md
