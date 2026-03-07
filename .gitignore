@@ -1,35 +1,15 @@
-# Virtual environment
-venv/
-.venv/
-
-# Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 *.egg-info/
 dist/
 build/
-
-# BMAD / Claude
-_bmad/
-_bmad-output/
-.claude/
-
-# Audio test files
+.streamlit/
 *.wav
-
-# Results / output
 results*.json
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs and reports
-ERROR_LOG.md
-EOD_REPORT.md
-CHANGELOG.md
+.pytest_cache/
+.coverage
+htmlcov/
+.env
